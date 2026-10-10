@@ -1,5 +1,7 @@
 **ARM64 assertion-section test project**
 
+Revision 2: fixes the missing Mach-O code-section flags in the original project. Your original native run passed `near-custom` and `far-text` but failed `far-custom`; see `VALIDATION.md`. The corrected native run is pending.
+
 This repository runs a standalone macOS ARM64 compiler/linker experiment on GitHub Actions. It does not need your engine, Unreal, a local ARM machine, an Apple developer account, or additional Python packages. It also contains a portable C++20 annotation header and a small assertion example you can adapt to your engine.
 
 The original single-file YAML generated all its C++ inside the workflow. This version separates that code into ordinary source files. Commit the whole project, including `.github/workflows/`, rather than copying just this new YAML.
@@ -10,7 +12,9 @@ The original single-file YAML generated all its C++ inside the workflow. This ve
 2. Create an empty GitHub repository. Commit and push the contents of this folder, including `.github`.
 3. Open the repository's **Actions** tab and select **macOS ARM64 assertion sections**.
 4. Click **Run workflow**. Start with runner `macos-26` and LTO `off`.
-5. Inspect the three jobs. Their summaries show `PASS`, a build/link/run failure, or `INVALID_TEST`. Download the diagnostic artifacts if a job fails.
+5. Inspect the four jobs. The first three are the corrected tests. The fourth deliberately uses the old, unflagged declaration and records its outcome as a diagnostic comparison. Download the diagnostic artifacts if a job fails.
+
+If you already created the repository, overwrite its project files with this revision, commit and push, then start a **new** workflow run on the new commit. Re-running an old Actions run uses the old commit and will not test this fix. Start again with `macos-26` and LTO `off`.
 
 For example, from the extracted project folder, after creating your empty GitHub repository:
 
@@ -31,18 +35,22 @@ The call chain is `main -> hot_entry -> cold_handler -> hot_callback`. Each help
 
 | Case | Layout | Purpose |
 |---|---|---|
-| `near-custom` | Small ordinary text plus `__TEXT,__easrt` | Confirms basic custom-section placement and execution. |
+| `near-custom` | Small ordinary text plus correctly flagged `__TEXT,__easrt` | Confirms basic custom-section placement and execution. |
 | `far-text` | All probe functions in ordinary `__TEXT,__text`; generated padding between callers and callee | Control case for range extension in ordinary text. |
-| `far-custom` | Callers in ordinary text, handler in `__TEXT,__easrt`, with generated padding | Tests range extension into and out of the custom section. |
+| `far-custom` | Callers in ordinary text, handler in correctly flagged `__TEXT,__easrt`, with generated padding | The deciding test: range extension into and out of a properly declared custom code section. |
+| `far-custom-unflagged` | Same custom-section layout, deliberately omitting `regular,pure_instructions` | Reproduces the old declaration as a diagnostic comparison. |
 
-The two far cases generate 160 MiB of unexecuted padding during the build. It consists of 160 independently labelled 1 MiB pieces so the linker has insertion points for branch islands. The ZIP contains only the small generator, not the generated padding or executables.
+Each far case generates 160 MiB of unexecuted padding during the build. It consists of 160 independently labelled 1 MiB pieces so the linker has insertion points for branch islands. The ZIP contains only the small generator, not the generated padding or executables.
 
-The script verifies actual symbol distances above the approximately 128 MiB direct-call range, verifies the handler's section from the link map, and executes the program. It records the Xcode/compiler/linker versions. A source attribute or a successful small link alone is not counted as a successful long-range test.
+The script verifies actual symbol distances above the approximately 128 MiB direct-call range, verifies the handler's section from the link map, and executes the program. It also reads actual section flags with `otool -l`: from the object before linking when LTO is off, and from the executable after linking. The corrected cases require a regular section with `S_ATTR_PURE_INSTRUCTIONS` set. LTO object files contain bitcode, so their flag check is deferred until the native executable exists. It records Xcode/compiler/linker versions. A source attribute or a successful small link alone is not counted as a successful long-range test.
 
 **Interpret the result**
 
-- All three `PASS`: these call/layout cases work with the recorded Apple tools and options. You can enable the Mac custom-section option for that toolchain, then repeat with the LTO and other flags you actually ship.
-- `near-custom` and `far-text` pass, while `far-custom` has an out-of-range linker error: this demonstrates the kind of custom-section limitation described in the Unreal comment. Leave custom placement disabled for that configuration.
+- The first three cases `PASS`: these properly flagged call/layout cases work with the recorded Apple tools and options. You can enable the corrected Mac custom-section option for that toolchain, then repeat with the LTO and other flags you actually ship.
+- `near-custom` and `far-text` pass, while corrected `far-custom` has an out-of-range linker error after its object flags passed verification: this supports a custom-code-section range-extension limitation in that recorded linker/layout. Leave custom placement disabled for that configuration.
+- Corrected `far-custom` passes while `far-custom-unflagged` reports `UNFLAGGED_RANGE_ERROR`: the corrected declaration resolves the original failure in this experiment. It does not prove every possible layout works.
+- `UNFLAGGED_RANGE_ERROR` is allowed only in the fourth, deliberately unflagged case, and only for an actual `arm64_b26` / `B/BL out of range` linker diagnostic. Its JSON still records `link_status: LINK_FAILED`. It is not reported as a successful link. Every linker error in the corrected case still fails the workflow.
+- The unflagged case may also `PASS` on a linker/compiler that handles it. That does not weaken the corrected case's section-flag verification.
 - `INVALID_TEST`: the intended layout could not be established or checked. This is not proof that the linker cannot handle custom sections.
 - `BUILD_FAILED`, `ENVIRONMENT_ERROR`, or `HARNESS_ERROR`: inspect the logs; compilation or the test setup failed before establishing the intended experiment.
 - `RUN_FAILED`: the executable linked but did not run successfully; inspect `execute.log`.
@@ -53,7 +61,7 @@ This is a branch-reach and basic execution test. It does not measure performance
 
 | File | Role |
 |---|---|
-| `.github/workflows/macos-arm64-sections.yml` | Runs the three cases on GitHub's ARM64 Mac runner and preserves diagnostic files. |
+| `.github/workflows/macos-arm64-sections.yml` | Runs the three corrected cases plus the unflagged comparison on GitHub's ARM64 Mac runner and preserves diagnostic files. |
 | `src/section_probe.cpp` | The small C++ call chain being tested. |
 | `tools/run_macos.py` | Generates padding and ordering, compiles and links, verifies addresses/sections, and runs the executable. Python standard library only. |
 | `include/engine_assert_attributes.hpp` | Concrete annotation policy for an engine's failure helpers. |
@@ -98,4 +106,4 @@ assertion_example.exe
 
 To enable the optional Mac custom section, add `-DENGINE_ENABLE_ASSERT_SECTION=1`. To disable custom placement on any supported compiler, define the same macro as `0` (`/DENGINE_ENABLE_ASSERT_SECTION=0` with MSVC). Keep this setting consistent across declarations, definitions, and translation units.
 
-This project contains source files, not an initialized `.git` directory, a remote repository, or pre-run GitHub results. No native Apple linker run has been performed before delivery.
+This project contains source files, not an initialized `.git` directory or a remote repository. The user's original native run is documented in `VALIDATION.md`; a native run of this corrected revision remains pending.

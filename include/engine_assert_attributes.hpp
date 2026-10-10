@@ -37,7 +37,8 @@
 #if !ENGINE_ENABLE_ASSERT_SECTION
 #  define ENGINE_ASSERT_SECTION
 #elif defined(__APPLE__) && (defined(__clang__) || defined(__GNUC__))
-#  define ENGINE_ASSERT_SECTION __attribute__((section("__TEXT,__easrt")))
+// Mach-O needs explicit instruction flags for a user-named code section.
+#  define ENGINE_ASSERT_SECTION __attribute__((section("__TEXT,__easrt,regular,pure_instructions")))
 #elif defined(_WIN32) && defined(_MSC_VER)
 // Covers MSVC and clang-cl. Keep the PE section name within eight characters.
 #  define ENGINE_ASSERT_SECTION __declspec(code_seg(".easrt"))

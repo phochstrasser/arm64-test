@@ -10,12 +10,22 @@
 #define ENGINE_ENABLE_ASSERT_SECTION PROBE_CUSTOM_SECTION
 #include "engine_assert_attributes.hpp"
 
-#define PROBE_HOT ENGINE_NOINLINE __attribute__((section("__TEXT,__text")))
+#ifndef PROBE_UNFLAGGED_CUSTOM
+#  define PROBE_UNFLAGGED_CUSTOM 0
+#endif
+#if PROBE_UNFLAGGED_CUSTOM
+// Diagnostic comparison only: deliberately reproduce the original declaration.
+// The production header above always includes the correct instruction flags.
+#  undef ENGINE_ASSERT_SECTION
+#  define ENGINE_ASSERT_SECTION __attribute__((section("__TEXT,__easrt")))
+#endif
+
+#define PROBE_HOT ENGINE_NOINLINE __attribute__((section("__TEXT,__text,regular,pure_instructions")))
 #if PROBE_CUSTOM_SECTION
 #  define PROBE_COLD ENGINE_FAILURE_ATTRIBUTES
 #else
 // Explicit ordinary-text control case for the identical call graph.
-#  define PROBE_COLD ENGINE_COLD ENGINE_NOINLINE __attribute__((section("__TEXT,__text")))
+#  define PROBE_COLD ENGINE_COLD ENGINE_NOINLINE __attribute__((section("__TEXT,__text,regular,pure_instructions")))
 #endif
 
 extern "C" {

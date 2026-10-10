@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
-CASES = ("near-custom", "far-text", "far-custom")
+CASES = ("near-custom", "far-text", "far-custom", "far-custom-unflagged")
 MIB = 1024 * 1024
 
 
@@ -108,11 +108,44 @@ def verify_layout(symbol_text, map_text, custom, far):
     }
 
 
+def verify_section_flags(load_commands, section_name, require_instructions):
+    """Read numeric section flags from Apple's non-verbose `otool -l` output."""
+    sections = []
+    section = None
+    for line in load_commands.splitlines():
+        fields = line.split()
+        if fields == ["Section"] or line.strip().startswith("Load command "):
+            if section is not None:
+                sections.append(section)
+            section = {} if fields == ["Section"] else None
+        elif section is not None and len(fields) >= 2:
+            if fields[0] in ("sectname", "segname", "flags"):
+                section[fields[0]] = fields[1]
+    if section is not None:
+        sections.append(section)
+    for section in sections:
+        if section.get("segname") == "__TEXT" and section.get("sectname") == section_name:
+            if "flags" not in section:
+                raise ProbeFailure("INVALID_TEST", "No section flags in otool output")
+            flags = int(section["flags"], 0)
+            regular = (flags & 0xff) == 0
+            pure_instructions = bool(flags & 0x80000000)
+            print(f"__TEXT,{section_name} flags: 0x{flags:08x}; "
+                  f"regular={regular}, pure_instructions={pure_instructions}", flush=True)
+            if not regular or (require_instructions and not pure_instructions):
+                raise ProbeFailure("INVALID_TEST", "Missing regular,pure_instructions code-section flags")
+            return {"section": "__TEXT," + section_name, "flags": hex(flags),
+                    "regular": regular, "pure_instructions": pure_instructions}
+    raise ProbeFailure("INVALID_TEST", "Section missing in otool output: " + section_name)
+
+
 def test_case(case, out, lto, generate_only):
     work = out / case
     custom, far = case != "far-text", case != "near-custom"
+    unflagged = case == "far-custom-unflagged"
     generate(work, far)
-    result = {"case": case, "lto": lto, "status": "STARTED"}
+    result = {"case": case, "lto": lto, "status": "STARTED",
+              "explicit_instruction_flags": not unflagged, "test_revision": 2}
     try:
         if generate_only:
             result["status"] = "GENERATED_ONLY"
@@ -132,9 +165,20 @@ def test_case(case, out, lto, generate_only):
             "-arch", "arm64", "-std=c++20", "-O2", "-Wall", "-Wextra",
             "-Werror", "-fno-optimize-sibling-calls", "-I", str(PROJECT / "include"),
             f"-DPROBE_CUSTOM_SECTION={int(custom)}",
+            f"-DPROBE_UNFLAGGED_CUSTOM={int(unflagged)}",
         ]
         run(["xcrun", "clang++", *compile_flags, *lto_flags,
              "-c", "probe.cpp", "-o", "probe.o"], work, "compile.log")
+        expected_section = "__easrt" if custom else "__text"
+        if lto == "off":
+            # Validate the actual object metadata, not merely the source spelling.
+            object_commands = run(["xcrun", "otool", "-l", "probe.o"],
+                                  work, "object-sections.log", "INVALID_TEST")
+            result["object_section"] = verify_section_flags(
+                object_commands, expected_section, require_instructions=not unflagged)
+        else:
+            # The LTO input is bitcode; inspect the native section after linking.
+            result["object_section"] = "LTO bitcode; check deferred until final link"
         run(["xcrun", "clang", "-arch", "arm64", "-c", "padding.s", "-o", "padding.o"],
             work, "assemble.log")
         # Use the actual Apple linker selected by Xcode, not ELF LLD or ld64.lld.
@@ -142,13 +186,24 @@ def test_case(case, out, lto, generate_only):
              "-Wl,-order_file,order.txt", "-Wl,-map,probe.map",
              "probe.o", "padding.o", "-o", "probe"], work, "link.log", "LINK_FAILED")
         symbols = run(["xcrun", "nm", "-n", "probe"], work, "symbols.log", "INVALID_TEST")
-        run(["xcrun", "otool", "-l", "probe"], work, "load-commands.log", "INVALID_TEST")
+        load_commands = run(["xcrun", "otool", "-l", "probe"],
+                            work, "load-commands.log", "INVALID_TEST")
+        result["linked_section"] = verify_section_flags(
+            load_commands, expected_section, require_instructions=not unflagged)
         result.update(verify_layout(symbols, (work / "probe.map").read_text(), custom, far))
         run(["./probe"], work, "execute.log", "RUN_FAILED")
         result["status"] = "PASS"
         print(f"PASS {case}: linked, verified placement and reach, executed with exit code 0", flush=True)
     except ProbeFailure as exc:
         result.update(status=exc.status, error=str(exc))
+        if unflagged and exc.status == "LINK_FAILED":
+            link_log = (work / "link.log").read_text()
+            if "arm64_b26" in link_log and "B/BL out of range" in link_log:
+                # This case deliberately reproduces the bad original declaration.
+                # Record its range error without marking it as a successful link.
+                result.update(status="UNFLAGGED_RANGE_ERROR", link_status="LINK_FAILED")
+                print("Diagnostic control reproduced the unflagged range error; "
+                      "the corrected far-custom case remains the deciding test.", flush=True)
         print(f"{exc.status} {case}: {exc}", file=sys.stderr, flush=True)
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         result.update(status="HARNESS_ERROR", error=str(exc))
@@ -174,8 +229,13 @@ def main():
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as stream:
             stream.write(summary)
-    expected = "GENERATED_ONLY" if args.generate_only else "PASS"
-    return 0 if all(r["status"] == expected for r in results) else 1
+    def acceptable(result):
+        if args.generate_only:
+            return result["status"] == "GENERATED_ONLY"
+        return result["status"] == "PASS" or (
+            result["case"] == "far-custom-unflagged" and
+            result["status"] == "UNFLAGGED_RANGE_ERROR")
+    return 0 if all(acceptable(r) for r in results) else 1
 
 
 if __name__ == "__main__":

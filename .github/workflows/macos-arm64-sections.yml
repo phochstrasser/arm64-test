@@ -32,7 +32,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [near-custom, far-text, far-custom]
+        # Fourth case deliberately reproduces the original unflagged declaration.
+        case: [near-custom, far-text, far-custom, far-custom-unflagged]
     env:
       PROBE_CASE: ${{ matrix.case }}
       PROBE_LTO: ${{ inputs.lto }}

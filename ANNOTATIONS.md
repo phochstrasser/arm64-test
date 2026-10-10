@@ -8,7 +8,9 @@ Scope: modern C++20, GCC/Clang on ELF Linux, MSVC/clang-cl on Windows, and Apple
 | Linux, Clang | `__attribute__((cold, noinline))` | Enabled: `__attribute__((section(".easrt")))` |
 | Windows, MSVC | `__declspec(noinline)`; no corresponding `cold` function annotation here | Enabled: `__declspec(code_seg(".easrt"))` |
 | Windows, clang-cl | `__attribute__((cold))` and `__declspec(noinline)` | Enabled: `__declspec(code_seg(".easrt"))` |
-| macOS, Apple Clang | `__attribute__((cold, noinline))` | Disabled initially. Opt-in after the native test: `__attribute__((section("__TEXT,__easrt")))` |
+| macOS, Apple Clang | `__attribute__((cold, noinline))` | Disabled initially. Opt-in after the corrected native test: `__attribute__((section("__TEXT,__easrt,regular,pure_instructions")))` |
+
+Revision 2 corrects the earlier Mac declaration, which omitted `regular,pure_instructions`. The native linker warned that the original section was not a code section and failed a long-range call out of it. That original result is not sufficient to decide whether properly flagged custom code works with the same linker. Keep the Mac custom-section option off until the corrected test passes.
 
 This chooses a short dedicated section name, not `.text.unlikely.*`, so the usual ELF linker policy does not simply merge it into ordinary `.text`. No `-z keep-text-section-prefix` option is required for this chosen custom-section scheme. If you instead rely on compiler-created `.text.unlikely.*`, ELF LLD's `-z keep-text-section-prefix` is one alternative layout policy. Do not assume the two schemes are interchangeable under a custom linker script.
 
@@ -62,4 +64,6 @@ Primary references checked 10 October 2026:
 - [Microsoft __debugbreak](https://learn.microsoft.com/en-us/cpp/intrinsics/debugbreak?view=msvc-170).
 - [Clang language extensions](https://clang.llvm.org/docs/LanguageExtensions.html): `__builtin_debugtrap`.
 - [LLD ELF layout policy](https://lld.llvm.org/ELF/linker_script.html).
+- [LLVM libc++ custom Mach-O function section](https://llvm.googlesource.com/llvm-project/+/refs/tags/llvmorg-20.1.4/libcxx/src/include/overridable_function.h): uses the explicit `regular,pure_instructions` form.
+- [Apple assembler directives](https://developer.apple.com/library/archive/documentation/DeveloperTools/Reference/Assembler/040-Assembler_Directives/asm_directives.html): section types and instruction attributes.
 - [GitHub runner specifications](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
