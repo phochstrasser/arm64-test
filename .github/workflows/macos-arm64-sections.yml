@@ -1,0 +1,59 @@
+name: macOS ARM64 assertion sections
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: ARM64 Mac runner image
+        required: true
+        default: macos-26
+        type: choice
+        options:
+          - macos-26
+          - macos-15
+      lto:
+        description: Start with off, then repeat with your intended LTO mode
+        required: true
+        default: 'off'
+        type: choice
+        options:
+          - 'off'
+          - thin
+          - full
+
+permissions:
+  contents: read
+
+jobs:
+  section-reach:
+    name: ${{ matrix.case }} (LTO ${{ inputs.lto }})
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [near-custom, far-text, far-custom]
+    env:
+      PROBE_CASE: ${{ matrix.case }}
+      PROBE_LTO: ${{ inputs.lto }}
+    steps:
+      - name: Check out this project
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compile, link, verify addresses, and execute
+        run: python3 tools/run_macos.py --case "$PROBE_CASE" --lto "$PROBE_LTO"
+
+      - name: Preserve diagnostic files, including failures
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: section-test-${{ matrix.case }}-${{ inputs.lto }}
+          path: |
+            build/**/*.log
+            build/**/*.json
+            build/**/*.map
+            build/**/*.txt
+          if-no-files-found: warn
+          retention-days: 14
